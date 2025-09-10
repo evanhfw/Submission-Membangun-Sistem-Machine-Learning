@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  preprocess-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install dependencies
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          uv sync
+
+      - name: Run preprocessing
+        run: |
+          mkdir -p data/preprocessed
+          export PATH="$HOME/.cargo/bin:$PATH"
+          uv run python preprocessing/automate_evan-hanif.py --input_file "data/raw/Credit Score Dataset.csv" --output_file "data/preprocessed/cleaned_data.csv"
