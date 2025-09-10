@@ -4,9 +4,75 @@ from typing import Tuple, Optional
 
 import pandas as pd
 import numpy as np
+import joblib
 
-from sklearn.preprocessing import FunctionTransformer
+from sklearn.preprocessing import FunctionTransformer, PowerTransformer
 from sklearn.model_selection import train_test_split
+from sklearn.pipeline import make_pipeline
+from sklearn.base import BaseEstimator, TransformerMixin
+
+import argparse
+
+
+class YeoJohnsonOnHighSkew(BaseEstimator, TransformerMixin):
+    """
+    - Hitung skewness kolom numerik (setelah cleaner) saat fit.
+    - Pilih kolom dengan skew > threshold, kecuali yang di-exclude.
+    - Fit Yeo-Johnson per kolom pada non-NaN values.
+    - Transform hanya kolom terpilih; NaN tetap NaN.
+    """
+
+    def __init__(
+        self,
+        threshold=1.0,
+        exclude=[
+            "Loan_Credit_Builder_Loan",
+            "Loan_Personal_Loan",
+            "Loan_Debt_Consolidation_Loan",
+            "Loan_Mortgage_Loan",
+            "Loan_Auto_Loan",
+            "Loan_Home_Equity_Loan",
+            "Loan_Unknown",
+            "Loan_Payday_Loan",
+            "Loan_Student_Loan",
+        ],
+        standardize=False,
+    ):
+        self.threshold = threshold
+        self.exclude = set(exclude) if exclude else set()
+        self.standardize = standardize
+        self.selected_cols_ = None
+        self.pt_map_ = {}
+
+    def fit(self, X, y=None):
+        # pastikan dataframe
+        X = pd.DataFrame(X).copy()
+        num_cols = X.select_dtypes(include="number").columns
+        # pilih kolom numerik dengan skew > threshold dan bukan di-exclude
+        skew = X[num_cols].skew(numeric_only=True)
+        self.selected_cols_ = [
+            c for c in num_cols if (skew[c] > self.threshold and c not in self.exclude)
+        ]
+        self.pt_map_ = {}
+        for c in self.selected_cols_:
+            x = X[c].to_numpy(dtype=float)
+            mask = ~np.isnan(x)
+            if mask.sum() == 0:  # semua NaN → lewati
+                continue
+            pt = PowerTransformer(method="yeo-johnson", standardize=self.standardize)
+            pt.fit(x[mask].reshape(-1, 1))
+            self.pt_map_[c] = pt
+        return self
+
+    def transform(self, X):
+        X = pd.DataFrame(X).copy()
+        for c, pt in self.pt_map_.items():
+            x = X[c].to_numpy(dtype=float)
+            mask = ~np.isnan(x)
+            x_t = np.full_like(x, fill_value=np.nan, dtype=float)
+            x_t[mask] = pt.transform(x[mask].reshape(-1, 1)).ravel()
+            X[c] = x_t
+        return X
 
 
 def clip_extreme_values(
@@ -357,18 +423,85 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     print("DATA CLEANING PROCESS COMPLETED")
     print("=" * 60)
 
-    return df
+    return df.drop(["ID", "Customer_ID", "Name", "SSN"], axis=1)
 
 
 def preprocess_data(
     raw_path: str,
     joblib_pipeline_save_path: str,
     target_col: str,
-    cleaned_data_csv_save_path: str,
+    header_csv_save_path: str,
 ):
-    DataCleaner = FunctionTransformer(clean_data)
+    """
+    Complete preprocessing pipeline for credit score data.
 
+    This function performs end-to-end preprocessing including data loading,
+    train-test split, data cleaning, feature transformation, and pipeline saving.
+
+    Parameters
+    ----------
+    raw_path : str
+        Path to the raw CSV data file
+    joblib_pipeline_save_path : str
+        Path where the fitted preprocessing pipeline will be saved using joblib
+    target_col : str
+        Name of the target column for stratified splitting
+    header_csv_save_path : str
+        Path where column headers (without data) will be saved as CSV
+
+    Returns
+    -------
+    tuple
+        X_train_preprocessed : array-like
+            Preprocessed training features
+        X_test_preprocessed : array-like
+            Preprocessed test features
+        y_train : array-like
+            Training target values
+        y_test : array-like
+            Test target values
+
+    Notes
+    -----
+    The preprocessing pipeline includes:
+    1. Data cleaning (missing values, extreme values, type conversion)
+    2. Yeo-Johnson transformation for high skew features
+    3. Train-test split with stratification (80-20 split)
+    4. Pipeline fitting on training data only
+    5. Transformation of both train and test sets
+
+    Examples
+    --------
+    >>> X_train, X_test, y_train, y_test = preprocess_data(
+    ...     raw_path="data.csv",
+    ...     joblib_pipeline_save_path="pipeline.pkl",
+    ...     target_col="Credit_Score",
+    ...     header_csv_save_path="headers.csv"
+    ... )
+    """
+    print("=" * 70)
+    print("STARTING COMPLETE PREPROCESSING PIPELINE")
+    print("=" * 70)
+
+    # Load raw data
+    print("\n📂 LOADING RAW DATA:")
+    print("-" * 40)
+    print(f"Loading data from: {raw_path}")
     df = pd.read_csv(raw_path)
+    print("✅ Data loaded successfully")
+    print(f"   Original shape: {df.shape}")
+    print(f"   Target column: '{target_col}'")
+
+    # Check target distribution
+    print("\n📊 TARGET DISTRIBUTION:")
+    print("-" * 40)
+    target_counts = df[target_col].value_counts()
+    print(target_counts)
+
+    # Train-test split
+    print("\n🔀 TRAIN-TEST SPLIT:")
+    print("-" * 40)
+    print("Performing stratified split (80-20)...")
     X_train, X_test, y_train, y_test = train_test_split(
         df.drop(target_col, axis=1),
         df[target_col],
@@ -376,8 +509,58 @@ def preprocess_data(
         random_state=42,
         stratify=df[target_col],
     )
+    print("✅ Split completed")
+    print(f"   Training set: {X_train.shape}")
+    print(f"   Test set: {X_test.shape}")
+    print("   Training target distribution:")
+    print(f"   {y_train.value_counts().to_dict()}")
+
+    # Save column headers
+    print("\n💾 SAVING COLUMN HEADERS:")
+    print("-" * 40)
+    column_names = df.columns.drop(target_col)
+    df_header = pd.DataFrame(columns=column_names)
+    df_header.to_csv(header_csv_save_path, index=False)
+    print(f"✅ Column headers saved to: {header_csv_save_path}")
+    print(f"   Number of feature columns: {len(column_names)}")
+
+    # Create preprocessing pipeline
+    print("\n🔧 BUILDING PREPROCESSING PIPELINE:")
+    print("-" * 40)
+    print("Creating pipeline components:")
+    print("   1. Data Cleaner (FunctionTransformer)")
+    print("   2. Yeo-Johnson Transformer for high skew features")
+
+    # IMPORTANT!!!
+    # Dilakukan fit di pipeline agar tidak menyebabkan information leakage nilai lambda dari yeojohnson
+    DataCleaner = FunctionTransformer(clean_data)
+    PreprocessingPipeline = make_pipeline(DataCleaner, YeoJohnsonOnHighSkew())
+    print("✅ Pipeline created successfully")
+
+    # Save pipeline
+    print("\n💾 SAVING PREPROCESSING PIPELINE:")
+    print("-" * 40)
+    joblib.dump(PreprocessingPipeline, joblib_pipeline_save_path)
+    print(f"✅ Pipeline saved to: {joblib_pipeline_save_path}")
+
+    print("\n" + "=" * 70)
+    print("PREPROCESSING PIPELINE COMPLETED SUCCESSFULLY")
+    print("=" * 70)
+    print("📈 SUMMARY:")
+    print(f"   • Raw data shape: {df.shape}")
+    print(f"   • Pipeline saved: {joblib_pipeline_save_path}")
+    print(f"   • Headers saved: {header_csv_save_path}")
+
+    return X_train, X_test, y_train, y_test
 
 
 if __name__ == "__main__":
-    df = pd.read_csv("Credit Score Dataset.csv")
-    df = clean_data(df)
+    parser = argparse.ArgumentParser(description="Clean credit score dataset")
+    parser.add_argument("--input_file", required=True, help="Path to input CSV file")
+    parser.add_argument("--output_file", required=True, help="Path to save cleaned CSV")
+    args = parser.parse_args()
+
+    df = pd.read_csv(args.input_file)
+    cleaned_df = clean_data(df)
+    cleaned_df.to_csv(args.output_file, index=False)
+    print(f"Cleaned data saved to {args.output_file}")
