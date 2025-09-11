@@ -34,12 +34,12 @@ jobs:
         run: |
           mkdir -p data/preprocessed
           export PATH="$HOME/.cargo/bin:$PATH"
-          uv run python preprocessing/automate_evan-hanif.py --input_file "data/raw/Credit Score Dataset.csv" --output_file "data/preprocessed/cleaned_data.csv"
+          uv run python preprocessing/automate_evanhanif.py --input_file "data/raw/Credit Score Dataset.csv" --output_dir "data/preprocessed"
 
       - name: Commit and push preprocessed data
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git add data/preprocessed
-          git commit -m "chore(data): add preprocessed data [skip ci]" || echo "No changes to commit"
+          git commit -m "feat(data): add complete preprocessed dataset with train/test splits [skip ci]" || echo "No changes to commit"
           git push
