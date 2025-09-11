@@ -1,4 +1,6 @@
 import re
+import os
+from pathlib import Path
 
 from typing import Tuple, Optional
 
@@ -433,10 +435,11 @@ def preprocess_data(
     header_csv_save_path: str,
 ):
     """
-    Complete preprocessing pipeline for credit score data.
+    Complete preprocessing pipeline for credit score data with fitted transformations.
 
     This function performs end-to-end preprocessing including data loading,
-    train-test split, data cleaning, feature transformation, and pipeline saving.
+    train-test split, data cleaning, feature transformation, pipeline fitting,
+    and returns the transformed data ready for modeling.
 
     Parameters
     ----------
@@ -452,13 +455,13 @@ def preprocess_data(
     Returns
     -------
     tuple
-        X_train_preprocessed : array-like
-            Preprocessed training features
-        X_test_preprocessed : array-like
-            Preprocessed test features
-        y_train : array-like
+        X_train : pd.DataFrame
+            Training features (after preprocessing)
+        X_test : pd.DataFrame
+            Test features (after preprocessing)
+        y_train : pd.Series
             Training target values
-        y_test : array-like
+        y_test : pd.Series
             Test target values
 
     Notes
@@ -467,8 +470,10 @@ def preprocess_data(
     1. Data cleaning (missing values, extreme values, type conversion)
     2. Yeo-Johnson transformation for high skew features
     3. Train-test split with stratification (80-20 split)
-    4. Pipeline fitting on training data only
-    5. Transformation of both train and test sets
+    4. Pipeline fitting on training data and transformation of both train/test
+    5. Pipeline is saved using joblib for later use
+
+    The returned X_train and X_test are already preprocessed and ready for modeling.
 
     Examples
     --------
@@ -478,6 +483,7 @@ def preprocess_data(
     ...     target_col="Credit_Score",
     ...     header_csv_save_path="headers.csv"
     ... )
+    >>> # Data is already preprocessed and ready for modeling
     """
     print("=" * 70)
     print("STARTING COMPLETE PREPROCESSING PIPELINE")
@@ -518,6 +524,12 @@ def preprocess_data(
     # Save column headers
     print("\n💾 SAVING COLUMN HEADERS:")
     print("-" * 40)
+
+    # Create directory if it doesn't exist
+    header_dir = Path(header_csv_save_path).parent
+    header_dir.mkdir(parents=True, exist_ok=True)
+    print(f"📁 Ensuring directory exists: {header_dir}")
+
     column_names = df.columns.drop(target_col)
     df_header = pd.DataFrame(columns=column_names)
     df_header.to_csv(header_csv_save_path, index=False)
@@ -531,15 +543,40 @@ def preprocess_data(
     print("   1. Data Cleaner (FunctionTransformer)")
     print("   2. Yeo-Johnson Transformer for high skew features")
 
-    # IMPORTANT!!!
-    # Dilakukan fit di pipeline agar tidak menyebabkan information leakage nilai lambda dari yeojohnson
     DataCleaner = FunctionTransformer(clean_data)
     PreprocessingPipeline = make_pipeline(DataCleaner, YeoJohnsonOnHighSkew())
     print("✅ Pipeline created successfully")
 
+    # Fit pipeline on training data
+    print("\n🔧 FITTING PREPROCESSING PIPELINE:")
+    print("-" * 40)
+    print("Fitting pipeline on training data...")
+    PreprocessingPipeline.fit(X_train)
+    print("✅ Pipeline fitted successfully")
+
+    # Transform both training and test data
+    print("\n🔄 TRANSFORMING DATA:")
+    print("-" * 40)
+    print("Transforming training data...")
+    X_train_transformed = PreprocessingPipeline.transform(X_train)
+    print("✅ Training data transformed")
+
+    print("Transforming test data...")
+    X_test_transformed = PreprocessingPipeline.transform(X_test)
+    print("✅ Test data transformed")
+
+    print(f"   Training features shape: {X_train_transformed.shape}")
+    print(f"   Test features shape: {X_test_transformed.shape}")
+
     # Save pipeline
     print("\n💾 SAVING PREPROCESSING PIPELINE:")
     print("-" * 40)
+
+    # Create directory if it doesn't exist
+    pipeline_dir = Path(joblib_pipeline_save_path).parent
+    pipeline_dir.mkdir(parents=True, exist_ok=True)
+    print(f"📁 Ensuring directory exists: {pipeline_dir}")
+
     joblib.dump(PreprocessingPipeline, joblib_pipeline_save_path)
     print(f"✅ Pipeline saved to: {joblib_pipeline_save_path}")
 
@@ -548,19 +585,62 @@ def preprocess_data(
     print("=" * 70)
     print("📈 SUMMARY:")
     print(f"   • Raw data shape: {df.shape}")
+    print(f"   • Transformed training shape: {X_train_transformed.shape}")
+    print(f"   • Transformed test shape: {X_test_transformed.shape}")
     print(f"   • Pipeline saved: {joblib_pipeline_save_path}")
     print(f"   • Headers saved: {header_csv_save_path}")
 
-    return X_train, X_test, y_train, y_test
+    return X_train_transformed, X_test_transformed, y_train, y_test
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Clean credit score dataset")
+    parser = argparse.ArgumentParser(description="Preprocess credit score dataset")
     parser.add_argument("--input_file", required=True, help="Path to input CSV file")
-    parser.add_argument("--output_file", required=True, help="Path to save cleaned CSV")
+    parser.add_argument(
+        "--output_dir", required=True, help="Directory to save preprocessed CSV files"
+    )
+    parser.add_argument(
+        "--target_col", default="Credit_Score", help="Target column name"
+    )
+    parser.add_argument("--pipeline_path", help="Path to save pipeline (optional)")
+    parser.add_argument("--header_path", help="Path to save headers CSV (optional)")
     args = parser.parse_args()
 
-    df = pd.read_csv(args.input_file)
-    cleaned_df = clean_data(df)
-    cleaned_df.to_csv(args.output_file, index=False)
-    print(f"Cleaned data saved to {args.output_file}")
+    # Set default paths if not provided
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    pipeline_path = args.pipeline_path or str(output_dir / "preprocessing_pipeline.pkl")
+    header_path = args.header_path or str(output_dir / "column_headers.csv")
+
+    # Run preprocessing pipeline
+    X_train, X_test, y_train, y_test = preprocess_data(
+        raw_path=args.input_file,
+        joblib_pipeline_save_path=pipeline_path,
+        target_col=args.target_col,
+        header_csv_save_path=header_path,
+    )
+
+    # Save preprocessed data as CSV files
+    print("\n💾 SAVING PREPROCESSED DATA:")
+    print("-" * 40)
+
+    X_train_path = output_dir / "X_train.csv"
+    X_test_path = output_dir / "X_test.csv"
+    y_train_path = output_dir / "y_train.csv"
+    y_test_path = output_dir / "y_test.csv"
+
+    X_train.to_csv(X_train_path, index=False)
+    X_test.to_csv(X_test_path, index=False)
+    y_train.to_csv(y_train_path, index=False, header=True)
+    y_test.to_csv(y_test_path, index=False, header=True)
+
+    print(f"✅ X_train saved to: {X_train_path}")
+    print(f"✅ X_test saved to: {X_test_path}")
+    print(f"✅ y_train saved to: {y_train_path}")
+    print(f"✅ y_test saved to: {y_test_path}")
+    print(f"✅ Pipeline saved to: {pipeline_path}")
+    print(f"✅ Headers saved to: {header_path}")
+
+    print("\n🎉 PREPROCESSING COMPLETED SUCCESSFULLY!")
+    print(f"All files saved to: {output_dir}")
